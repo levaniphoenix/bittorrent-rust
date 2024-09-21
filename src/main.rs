@@ -26,10 +26,8 @@ fn main() {
 
     if command == "decode" {
         // You can use print statements as follows for debugging, they'll be visible when running tests.
-        println!("Logs from your program will appear here!");
 
-        let mut encoded_value = &args[2];
-        encoded_value = &args[2];
+        let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
     } else {
