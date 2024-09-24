@@ -16,4 +16,10 @@ impl Handshake {
             peer_id,
         }
     }
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        let bytes = self as *mut Self as *mut [u8; std::mem::size_of::<Self>()];
+        // Safety: Handshake is a POD with repr(c)
+        let bytes: &mut [u8; std::mem::size_of::<Self>()] = unsafe { &mut *bytes };
+        bytes
+    }
 }
