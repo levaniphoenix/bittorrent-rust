@@ -1,13 +1,23 @@
 pub mod peers {
+    use anyhow::Result;
     use bytes::{Buf, BufMut, BytesMut};
+    use futures_util::{SinkExt, StreamExt};
     use serde::de::{self, Deserialize, Deserializer, Visitor};
     use serde::ser::{Serialize, Serializer};
+    use sha1::Digest;
     use std::fmt;
     use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio::sync::mpsc;
+    use tokio::time;
     use tokio_util::codec::Decoder;
     use tokio_util::codec::Encoder;
-    #[derive(Debug, Clone)]
-    pub struct Peers(pub Vec<Peer>);
+
+    use crate::activepeer::activepeer::ActivePeer;
+
+    const BLOCK_MAX: usize = 1 << 14;
 
     #[derive(Debug, Clone)]
     pub struct Peer {
@@ -19,6 +29,10 @@ pub mod peers {
             Self { ip4 }
         }
     }
+
+    #[derive(Debug, Clone)]
+    pub struct Peers(pub Vec<Peer>);
+
     struct PeersVisitor;
     impl<'de> Visitor<'de> for PeersVisitor {
         type Value = Peers;
@@ -67,6 +81,7 @@ pub mod peers {
         }
     }
 
+    #[derive(Debug, Clone)]
     #[repr(C)]
     pub struct Request {
         index: [u8; 4],
@@ -244,6 +259,59 @@ pub mod peers {
             dst.put_u8(item.tag as u8);
             dst.extend_from_slice(&item.payload);
             Ok(())
+        }
+    }
+
+    pub struct WorkQueue {
+        pub sender: mpsc::Sender<usize>,
+        pub receiver: tokio::sync::Mutex<mpsc::Receiver<usize>>,
+    }
+
+    impl WorkQueue {
+        pub fn new(pieces: Vec<usize>) -> Self {
+            let (sender, receiver) = mpsc::channel(pieces.len());
+            for piece in pieces {
+                let _ = sender.try_send(piece); // Load initial pieces
+            }
+            WorkQueue {
+                sender,
+                receiver: tokio::sync::Mutex::new(receiver),
+            }
+        }
+
+        pub async fn get_piece(&self) -> Option<usize> {
+            let mut receiver = self.receiver.lock().await;
+
+            if receiver.is_empty() {
+                return None;
+            }
+
+            receiver.recv().await
+        }
+
+        pub async fn return_piece(&self, piece_index: usize) {
+            let _ = self.sender.send(piece_index).await;
+        }
+    }
+
+    pub async fn connect_to_peer(peer: &Peer) -> Option<ActivePeer> {
+        let timeout_duration = Duration::from_secs(2);
+        println!("connecting to {:?}", peer.ip4);
+        let connection_attempt =
+            time::timeout(timeout_duration, TcpStream::connect(peer.ip4)).await;
+        match connection_attempt {
+            Ok(Ok(stream)) => Some(ActivePeer::new(tokio_util::codec::Framed::new(
+                stream,
+                MessageFramer,
+            ))),
+            Ok(Err(_)) => {
+                println!("Failed to connect to peer {:?}", peer.ip4);
+                None
+            }
+            Err(_) => {
+                println!("Failed to connect to peer {:?}", peer.ip4);
+                None
+            }
         }
     }
 }

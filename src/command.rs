@@ -12,4 +12,5 @@ pub enum Command {
     Decode { value: String },
     Info { torrent: PathBuf },
     Peers { torrent: PathBuf },
+    Download { torrent: PathBuf },
 }
