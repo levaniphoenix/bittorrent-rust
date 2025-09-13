@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+//cli commands
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -13,4 +14,10 @@ pub enum Command {
     Info { torrent: PathBuf },
     Peers { torrent: PathBuf },
     Download { torrent: PathBuf },
+}
+
+//broadcast commands
+#[derive(Clone,Debug)]
+pub enum BroadcastCommand{
+    Shutdown,
 }

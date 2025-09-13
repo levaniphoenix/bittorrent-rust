@@ -1,9 +1,10 @@
 pub mod activepeer {
 
     use anyhow::{Context, Error, Result};
-    use futures_util::{lock::Mutex, SinkExt, StreamExt};
+    use futures_util::{SinkExt, StreamExt};
     use sha1::{Digest, Sha1};
-    use std::{collections::VecDeque, io::SeekFrom, sync::Arc};
+    use std::{collections::VecDeque, sync::Arc};
+    use std::net::SocketAddrV4;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
@@ -42,14 +43,16 @@ pub mod activepeer {
         pub connection: Framed<TcpStream, MessageFramer>,
         pub peer_state: PeerState,
         pub bitfield: Vec<u8>,
+        pub ip: SocketAddrV4
     }
 
     impl ActivePeer {
-        pub fn new(connection: Framed<TcpStream, MessageFramer>) -> Self {
+        pub fn new(connection: Framed<TcpStream, MessageFramer>, ip: SocketAddrV4) -> Self {
             Self {
-                connection: connection,
+                connection,
                 peer_state: PeerState::new(),
                 bitfield: Vec::new(),
+                ip
             }
         }
 
@@ -72,11 +75,11 @@ pub mod activepeer {
                 t.plength
             };
 
-            let nblocks = (piece_size + (BLOCK_MAX - 1)) / BLOCK_MAX;
+            let n_blocks = (piece_size + (BLOCK_MAX - 1)) / BLOCK_MAX;
             let mut all_blocks = Vec::<u8>::with_capacity(piece_size);
 
-            for block in 0..nblocks {
-                let block_size = if block == nblocks - 1 {
+            for block in 0..n_blocks {
+                let block_size = if block == n_blocks - 1 {
                     let md = piece_size % BLOCK_MAX;
                     if md == 0 {
                         BLOCK_MAX
@@ -145,7 +148,7 @@ pub mod activepeer {
             buffer: Arc<tokio::sync::Mutex<Vec<u8>>>,
         ) {
             //step 1. do handshake
-            let handshake = self.exchange_handshakes(torrent).await;
+            let _ = self.exchange_handshakes(torrent).await;
 
             //step 2. get bitfield
             // self.bitfield = self
@@ -154,10 +157,12 @@ pub mod activepeer {
             //     .expect("should return bitfield")
             //     .payload;
 
+            println!("Thread {:?} | got bitfield", std::thread::current().id());
+
             //step 3. send interested message
             self.send_message(MessageTag::Interested, Vec::new())
                 .await
-                .expect("should send intersted message");
+                .expect("should send interested message");
 
             self.peer_state.am_interested = true;
 
@@ -166,10 +171,10 @@ pub mod activepeer {
             while let Some(piece_index) = work_queue.get_piece().await {
                 let piece_size =
                     ActivePeer::get_piece_size(piece_index, &torrent.torrent_file.info);
-                let nblocks = (piece_size + (BLOCK_MAX - 1)) / BLOCK_MAX;
+                let number_of_blocks = (piece_size + (BLOCK_MAX - 1)) / BLOCK_MAX;
                 let mut all_blocks = Vec::<u8>::with_capacity(piece_size);
 
-                let mut blocks_to_download: VecDeque<usize> = (0..nblocks).collect();
+                let mut blocks_to_download: VecDeque<usize> = (0..number_of_blocks).collect();
                 while !blocks_to_download.is_empty() {
                     //send request for block
                     if !self.peer_state.peer_choking {
@@ -192,14 +197,16 @@ pub mod activepeer {
                     let message = self
                         .connection
                         .next()
-                        .await
-                        .expect("recieve message from peer")
-                        .context("invalid message from peer");
+                        .await;
+
+                    let message = match message {
+                        None => continue,
+                        Some(message) => message,
+                    };
 
                     let message = match message {
                         Err(e) => {
                             println!("{}", e);
-                            //blocks_to_download.push_back(block_index);
                             break;
                         }
                         Ok(recv_message) => recv_message,
@@ -209,16 +216,16 @@ pub mod activepeer {
                     match message.tag {
                         MessageTag::Choke => {
                             self.peer_state.peer_choking = true;
-                            println!("choked");
+                            println!("Thread {:?} | choked", std::thread::current().id());
                         }
                         MessageTag::Unchoke => {
                             self.peer_state.peer_choking = false;
-                            println!("unchocked");
+                            println!("Thread {:?} | unchocked", std::thread::current().id());
                         }
                         MessageTag::Interested => {}
                         MessageTag::NotInterested => {}
                         MessageTag::Have => {
-                            println!("recieved a have message");
+                            //println!("received a have message");
                         }
                         MessageTag::Bitfield => self.bitfield = message.payload,
                         MessageTag::Request => {}
@@ -241,7 +248,7 @@ pub mod activepeer {
                         .expect("GenericArray<_, 20> == [_; 20]");
                     let piece_hash = &torrent.torrent_file.info.pieces.0[piece_index];
                     if hash != *piece_hash {
-                        println!("Piece {} failed hash check", piece_index + 1);
+                        println!("Thread {:?} | Piece {} failed hash check",std::thread::current().id() ,piece_index + 1);
                         work_queue.return_piece(piece_index).await;
                         all_blocks = Vec::<u8>::new();
                     }
@@ -251,9 +258,11 @@ pub mod activepeer {
                         buffer.extend(all_blocks);
 
                         println!(
-                            "Successfully downloaded and verified piece {} : {}",
+                            "Thread {:?} | Successfully downloaded and verified piece {} / {} from {}",
+                            std::thread::current().id(),
                             piece_index + 1,
-                            torrent.torrent_file.info.pieces.0.len()
+                            torrent.torrent_file.info.pieces.0.len(),
+                            self.ip
                         );
                     }
                 }
@@ -284,8 +293,7 @@ pub mod activepeer {
                 .connection
                 .next()
                 .await
-                .expect("peer always sends a bitfields")
-                .context("peer message was invalid")?;
+                .expect("peer always sends a bitfields")?;
             Ok(bitfield)
         }
 
@@ -297,7 +305,7 @@ pub mod activepeer {
             self.connection
                 .send(Message {
                     tag: message_tag,
-                    payload: payload,
+                    payload,
                 })
                 .await
                 .context("send interested message")

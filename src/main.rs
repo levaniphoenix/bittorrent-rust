@@ -6,18 +6,21 @@ mod hashes;
 mod peers;
 mod torrent;
 mod tracker;
+mod download_manager;
+mod client;
 
-use std::io::Write;
-use std::sync::Arc;
-
-use activepeer::activepeer::ActivePeer;
 use anyhow::Context;
 use clap::Parser;
 use command::{Args, Command};
 use decoder::decode_bencoded_value;
-use peers::peers::{connect_to_peer, WorkQueue};
 use sha1::{Digest, Sha1};
+use tokio::net::windows::named_pipe::PipeEnd::Client;
 use torrent::{Keys, Torrent, TorrentFile};
+use tokio::task::JoinSet;
+use tokio_mpmc::{channel};
+use crate::client::DownloadClient;
+use crate::download_manager::FileManager;
+use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -47,82 +50,81 @@ async fn main() -> anyhow::Result<()> {
             let info_hash = hasher.finalize();
             println!("Info Hash: {}", hex::encode(&info_hash));
             println!("Piece Length: {}", t.info.plength);
-            println!("Piece Hashes:");
-            for hash in t.info.pieces.0 {
-                println!("{}", hex::encode(&hash));
-            }
         }
         Command::Peers { torrent } => {
             let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
             let t: TorrentFile =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
-            let torrent = Torrent::new(t);
+            let torrent = Torrent::new(t.clone());
 
             let tracker_info = torrent
                 .contact_tracker()
                 .await
                 .context("getting info from tracker")?;
 
-            println!("{:?}", tracker_info.peers.0);
+            for peer in tracker_info.peers.0.iter() {
+                println!("{:?}", peer);
+            }
         }
         Command::Download { torrent } => {
             let dot_torrent = std::fs::read(torrent).context("read torrent file")?;
             let t: TorrentFile =
                 serde_bencode::from_bytes(&dot_torrent).context("parse torrent file")?;
-            let torrent = Arc::new(Torrent::new(t));
+            let torrent = Torrent::new(t.clone());
 
             let tracker_info = torrent
                 .contact_tracker()
                 .await
                 .context("getting info from tracker")?;
 
-            let work_queue =
-                WorkQueue::new((0..torrent.torrent_file.info.pieces.0.len()).collect());
-            let work_queue = Arc::new(work_queue);
-            let buffer = Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+            let num_pieces = torrent.torrent_file.info.pieces.0.len();
+            let (piece_tx, piece_rx) = channel(num_pieces);
+            let (data_tx, data_rx) = channel(num_pieces);
 
-            let mut workers = vec![];
+            for i in 0..num_pieces {
+                let result = piece_tx.send(i).await;
+                if result.is_err() {
+                    eprintln!("Error: Failed to send piece index to the channel.");
+                    break;
+                }
+            }
 
             let num_workers = 1;
-            let peers = Arc::new(tracker_info.peers.clone());
+            let mut set = JoinSet::new();
+            let (broadcast_sender, broadcast_receiver) = broadcast::channel(16);
+
+            let mut file_manager = FileManager::new(t, "Download".to_string(), data_rx, broadcast_sender.clone());
+            file_manager.pre_allocate_files().expect("could not pre allocate files");
+            set.spawn(file_manager.process());
 
             for _ in 0..num_workers {
-                let peer_info_ref = peers.clone();
-                let file_ref = torrent.clone();
-                let work_queue_ref = work_queue.clone();
-                let buffer_ref = buffer.clone();
-                workers.push(tokio::spawn(async move {
-                    let peers = peer_info_ref;
 
-                    //try connecting to a peer
-
-                    let mut peer: Option<ActivePeer> = None;
-                    for recieved_peer in peers.0.iter() {
-                        let result = connect_to_peer(recieved_peer).await;
-                        match result {
-                            Some(connection) => {
-                                peer = Some(connection);
-                                break;
-                            }
-                            None => {}
-                        }
+                let mut client = DownloadClient::new(
+                    tracker_info.peers.0.first().unwrap().ip4.clone(),
+                    torrent.clone(),
+                    piece_tx.clone(),
+                    piece_rx.clone(),
+                    data_tx.clone(),
+                    broadcast_sender.subscribe(),
+                );
+                let result = client.try_connect().await;
+                match result {
+                    Ok(_) => {
+                        eprintln!("connected to peer");
+                        set.spawn(client.start_message_loop());
                     }
-
-                    let mut peer = peer.expect("connect to a peer");
-                    peer.start_exchanging_messages(&file_ref, &work_queue_ref, buffer_ref)
-                        .await;
-                }));
+                    Err(_) => {
+                        eprintln!("Error: Failed to connect to torrent peer");
+                    }
+                }
             }
 
-            for worker in workers {
-                worker.await?;
-            }
+            set.join_all().await;
 
-            let file_name = &torrent.torrent_file.info.name;
-            let mut f = std::fs::File::create(file_name)?;
-            let buffer_guard = buffer.lock().await;
-            f.write_all(&buffer_guard)?;
         }
     }
     Ok(())
 }
+
+// ideas to improve
+// disconnect from peer if chocked for minute or not receiving msg for min

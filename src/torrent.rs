@@ -16,6 +16,7 @@ pub struct TorrentFile {
     pub announce: String,
     pub info: Info,
 }
+
 impl TorrentFile {
     pub fn info_hash(&self) -> [u8; 20] {
         let info_encoded =
@@ -33,7 +34,7 @@ impl TorrentFile {
 pub struct Info {
     /// The suggested name to save the file (or directory) as. It is purely advisory.
     ///
-    /// In the single file case, the name key is the name of a file, in the muliple file case, it's
+    /// In the single file case, the name key is the name of a file, in the multiple file case, it's
     /// the name of a directory.
     pub name: String,
     /// The number of bytes in each piece the file is split into.
@@ -95,6 +96,7 @@ pub struct DownloadInfo {
     pub left: usize,
 }
 
+#[derive(Clone, Debug)]
 pub struct Torrent {
     pub torrent_file: TorrentFile,
     pub peers: Vec<Peer>,
@@ -129,7 +131,7 @@ impl Torrent {
             url_params,
             &urlencode(&self.info_hash),
         );
-
+        
         let client = Client::new();
         let response = client
             .get(tracker_url)

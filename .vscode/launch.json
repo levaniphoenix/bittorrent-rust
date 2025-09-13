@@ -20,8 +20,8 @@
                 }
             },
             "args": [
-                "peers",
-                ".\\test.torrent"
+                "download",
+                "..\\..\\sample.torrent"
             ],
             "cwd": "${workspaceFolder}\\target\\debug"
         },

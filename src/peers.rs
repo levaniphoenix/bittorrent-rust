@@ -1,13 +1,10 @@
 pub mod peers {
     use anyhow::Result;
     use bytes::{Buf, BufMut, BytesMut};
-    use futures_util::{SinkExt, StreamExt};
     use serde::de::{self, Deserialize, Deserializer, Visitor};
     use serde::ser::{Serialize, Serializer};
-    use sha1::Digest;
     use std::fmt;
     use std::net::{Ipv4Addr, SocketAddrV4};
-    use std::sync::Arc;
     use std::time::Duration;
     use tokio::net::TcpStream;
     use tokio::sync::mpsc;
@@ -296,20 +293,20 @@ pub mod peers {
 
     pub async fn connect_to_peer(peer: &Peer) -> Option<ActivePeer> {
         let timeout_duration = Duration::from_secs(2);
-        println!("connecting to {:?}", peer.ip4);
+        println!("Thread {:?} | connecting to {:?}", std::thread::current().id(), peer.ip4);
         let connection_attempt =
             time::timeout(timeout_duration, TcpStream::connect(peer.ip4)).await;
         match connection_attempt {
             Ok(Ok(stream)) => Some(ActivePeer::new(tokio_util::codec::Framed::new(
                 stream,
                 MessageFramer,
-            ))),
+            ),peer.ip4)),
             Ok(Err(_)) => {
-                println!("Failed to connect to peer {:?}", peer.ip4);
+                println!("Thread {:?} | Failed to connect to peer {:?}", std::thread::current().id(), peer.ip4);
                 None
             }
             Err(_) => {
-                println!("Failed to connect to peer {:?}", peer.ip4);
+                println!("Thread {:?} | Failed to connect to peer {:?}", std::thread::current().id(), peer.ip4);
                 None
             }
         }
