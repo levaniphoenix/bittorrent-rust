@@ -68,7 +68,7 @@ impl FileManager {
 
     //todo unit test this method
     pub async fn write_piece(&self ,index: usize, data: Vec<u8>){
-        println!("Writing {} piece", index);
+        println!("Writing {}/{} piece, total {}", index, self.torrent_file.info.pieces.0.len(), self.downloaded_pieces);
         let piece_start_offset = index * &self.torrent_file.info.plength;
         let piece_bytes_written = 0;
         let mut current_global_offset = 0;
@@ -100,7 +100,6 @@ impl FileManager {
     }
     pub async fn process(mut self) -> Result<()>{
         while let Ok(Some(data)) = self.data_receiver.recv().await{
-            eprintln!("writing {} piece", data.0);
             self.write_piece(data.0, data.1).await;
             self.downloaded_pieces += 1;
 

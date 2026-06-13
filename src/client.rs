@@ -2,11 +2,11 @@ use std::net::SocketAddrV4;
 use std::time::Duration;
 use tokio_mpmc::{Receiver, Sender};
 use anyhow::{Context, Result};
-use futures_util::{select, FutureExt, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::{pin, time};
+use tokio::{time};
 use tokio_util::codec::Framed;
 use crate::command::BroadcastCommand;
 use crate::handshake::Handshake;
@@ -90,10 +90,12 @@ impl DownloadClient {
         }
 
         while received < n_blocks {
-            let msg = self.tcp_stream.as_mut().unwrap().next().await.expect("peer always sends a piece").context("peer message was invalid")?;
+            let mut msg = self.tcp_stream.as_mut().unwrap().next().await.context("peer message was invalid")??;
             match msg.tag {
                 MessageTag::Choke => {}
-                MessageTag::Unchoke => {}
+                MessageTag::Unchoke => {
+                    println!("got unchoke");
+                }
                 MessageTag::Interested => {}
                 MessageTag::NotInterested => {}
                 MessageTag::Have => {}
@@ -102,7 +104,6 @@ impl DownloadClient {
                 }
                 MessageTag::Request => {}
                 MessageTag::Piece => {
-                    println!("Received a block");
                     let piece = Piece::ref_from_bytes(&msg.payload[..]).expect("always get all Piece response fields from peer");
                     piece_data[piece.begin() as usize .. piece.begin() as usize + piece.block().len()]
                         .copy_from_slice(piece.block());
@@ -123,7 +124,7 @@ impl DownloadClient {
             return Err(anyhow::anyhow!("Hash mismatch for piece {}", piece_index));
         }
 
-        self.data_sender.send((piece_index,piece_data)).await.with_context(|| "Failed to send piece data to writer")?;
+        self.data_sender.send((piece_index,piece_data)).await.expect("Failed to send piece data to writer");
 
         Ok(())
     }
@@ -134,25 +135,11 @@ impl DownloadClient {
         let _ = self.exchange_handshakes(&torrent).await;
 
         //later exchange bitfields
+        //self.exchange_bitfields().await?;
 
         //step 3. send interested message
         self.send_message(MessageTag::Interested, Vec::new())
-            .await
-            .expect("should send interested message");
-
-        // while let Ok(Some(piece_index)) = self.piece_receiver.recv().await {
-        //     let result = self.download_piece(piece_index).await;
-        //     match result {
-        //         Ok(_) => {}
-        //         Err(e) => {
-        //             eprintln!("Error downloading {piece_index} piece from peer: {e}");
-        //             self.piece_sender.send(piece_index).await.with_context(|| "Failed to send piece back to queue")?;
-        //         }
-        //     }
-        // }
-
-        // let mut shutdown_fut = self.broadcast_receiver.recv();
-        // pin!(shutdown_fut);
+            .await?;
 
         loop {
                 tokio::select! {
@@ -164,7 +151,15 @@ impl DownloadClient {
                         match piece_index_result {
                             Ok(piece_index) => {
                                 if let Some(index) = piece_index{
-                                    self.download_piece(index).await?;
+                                    println!("downloading piece {index}");
+                                    let result = self.download_piece(index).await;
+                                    match result {
+                                        Ok(_) => {},
+                                        Err(e) => {
+                                            eprintln!("Error downloading piece {e}");
+                                            self.piece_sender.send(index).await.expect("worker should send index back");
+                                        }
+                                    }
                                 }
                             },
                             Err(e) => {
@@ -175,7 +170,6 @@ impl DownloadClient {
 
                 }
             }
-        eprintln!("end message loop");
         Ok(())
     }
 
@@ -217,7 +211,7 @@ impl DownloadClient {
             .tcp_stream.as_mut().unwrap()
             .next()
             .await
-            .expect("peer always sends a bitfields")?;
+            .context("peer always sends a bitfields")??;
         Ok(bitfield)
     }
 

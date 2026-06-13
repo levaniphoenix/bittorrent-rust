@@ -9,8 +9,10 @@ mod tracker;
 mod download_manager;
 mod client;
 
+use std::cmp::min;
 use anyhow::Context;
 use clap::Parser;
+use rand::prelude::{IndexedRandom, SliceRandom};
 use command::{Args, Command};
 use decoder::decode_bencoded_value;
 use sha1::{Digest, Sha1};
@@ -89,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let num_workers = 1;
+            let mut num_workers = 40;
             let mut set = JoinSet::new();
             let (broadcast_sender, broadcast_receiver) = broadcast::channel(16);
 
@@ -97,26 +99,34 @@ async fn main() -> anyhow::Result<()> {
             file_manager.pre_allocate_files().expect("could not pre allocate files");
             set.spawn(file_manager.process());
 
-            for _ in 0..num_workers {
+            let mut peers = tracker_info.peers.0.clone();
+            let mut rng = rand::rng();
+            peers.shuffle(&mut rng);
 
+            num_workers = min(num_workers, peers.len());
+
+            for peer in peers.into_iter().take(num_workers) {
                 let mut client = DownloadClient::new(
-                    tracker_info.peers.0.first().unwrap().ip4.clone(),
+                    peer.ip4.clone(),
                     torrent.clone(),
                     piece_tx.clone(),
                     piece_rx.clone(),
                     data_tx.clone(),
                     broadcast_sender.subscribe(),
                 );
-                let result = client.try_connect().await;
-                match result {
-                    Ok(_) => {
-                        eprintln!("connected to peer");
-                        set.spawn(client.start_message_loop());
+
+                set.spawn(async move {
+                    match client.try_connect().await {
+                        Ok(_) => {
+                            eprintln!("Connected to peer: {}", peer.ip4);
+                            let _ = client.start_message_loop().await;
+                        }
+                        Err(_) => {
+                            eprintln!("Error: Failed to connect to torrent peer: {}", peer.ip4);
+                        }
                     }
-                    Err(_) => {
-                        eprintln!("Error: Failed to connect to torrent peer");
-                    }
-                }
+                    Ok(())
+                });
             }
 
             set.join_all().await;
