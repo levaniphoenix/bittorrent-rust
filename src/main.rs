@@ -7,8 +7,10 @@ mod torrent;
 mod tracker;
 mod download_manager;
 mod client;
+mod progress;
 
 use std::cmp::min;
+use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 use rand::prelude::SliceRandom;
@@ -20,6 +22,7 @@ use tokio::task::JoinSet;
 use tokio_mpmc::channel;
 use crate::client::DownloadClient;
 use crate::download_manager::FileManager;
+use crate::progress::DownloadProgress;
 use tokio::sync::broadcast;
 
 #[tokio::main]
@@ -92,6 +95,15 @@ async fn main() -> anyhow::Result<()> {
             let mut set = JoinSet::new();
             let (broadcast_sender, _broadcast_receiver) = broadcast::channel(16);
 
+            let progress = Arc::new(DownloadProgress::new(num_pieces));
+            let progress_display = progress.clone();
+            set.spawn(async move {
+                loop {
+                    progress_display.display();
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+            });
+
             let file_manager = FileManager::new(t, "Download".to_string(), data_rx, broadcast_sender.clone());
             file_manager.pre_allocate_files().expect("could not pre allocate files");
             set.spawn(file_manager.process());
@@ -103,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
             let num_workers = min(40, peers.len());
 
             for peer in peers.into_iter().take(num_workers) {
+                let progress_clone = progress.clone();
                 let mut client = DownloadClient::new(
                     peer.ip4.clone(),
                     torrent.clone(),
@@ -110,16 +123,19 @@ async fn main() -> anyhow::Result<()> {
                     piece_rx.clone(),
                     data_tx.clone(),
                     broadcast_sender.subscribe(),
+                    progress.clone(),
                 );
 
                 set.spawn(async move {
                     match client.try_connect().await {
                         Ok(_) => {
-                            eprintln!("Connected to peer: {}", peer.ip4);
+                            progress_clone.connect_peer();
+                            eprintln!("\nConnected to peer: {}", peer.ip4);
                             let _ = client.start_message_loop().await;
+                            progress_clone.disconnect_peer();
                         }
                         Err(_) => {
-                            eprintln!("Error: Failed to connect to torrent peer: {}", peer.ip4);
+                            eprintln!("\nError: Failed to connect to torrent peer: {}", peer.ip4);
                         }
                     }
                     Ok(())

@@ -1,4 +1,5 @@
 use std::net::SocketAddrV4;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_mpmc::{Receiver, Sender};
 use anyhow::{Context, Result};
@@ -11,6 +12,7 @@ use tokio_util::codec::Framed;
 use crate::command::BroadcastCommand;
 use crate::handshake::Handshake;
 use crate::peers::{Message, MessageFramer, MessageTag, Piece, Request};
+use crate::progress::DownloadProgress;
 use crate::torrent::{Torrent, PEER_ID};
 
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -24,6 +26,7 @@ pub struct DownloadClient {
     broadcast_receiver: tokio::sync::broadcast::Receiver<BroadcastCommand>,
     tcp_stream: Option<Framed<TcpStream, MessageFramer>>,
     torrent: Torrent,
+    progress: Arc<DownloadProgress>,
 }
 
 impl DownloadClient {
@@ -34,6 +37,7 @@ impl DownloadClient {
         piece_receiver: Receiver<usize>,
         data_sender: Sender<(usize, Vec<u8>)>,
         broadcast_receiver: tokio::sync::broadcast::Receiver<BroadcastCommand>,
+        progress: Arc<DownloadProgress>,
     ) -> Self {
         DownloadClient {
             ip,
@@ -43,6 +47,7 @@ impl DownloadClient {
             data_sender,
             broadcast_receiver,
             tcp_stream: None,
+            progress,
         }
     }
 
@@ -138,6 +143,9 @@ impl DownloadClient {
             return Err(anyhow::anyhow!("hash mismatch for piece {}", piece_index));
         }
 
+        self.progress.add_bytes(piece_data.len() as u64);
+        self.progress.complete_piece();
+
         self.data_sender
             .send((piece_index, piece_data))
             .await
@@ -166,7 +174,7 @@ impl DownloadClient {
                 piece_index_result = self.piece_receiver.recv() => {
                     match piece_index_result {
                         Ok(Some(index)) => {
-                            eprintln!("Downloading piece {} from {}", index, self.ip);
+                            //eprintln!("Downloading piece {} from {}", index, self.ip);
                             if let Err(e) = self.download_piece(index).await {
                                 eprintln!("Error downloading piece {}: {}", index, e);
                                 self.piece_sender.send(index).await

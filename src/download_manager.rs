@@ -64,11 +64,11 @@ impl FileManager {
     }
 
     pub async fn write_piece(&self, index: usize, data: Vec<u8>) -> Result<()> {
-        eprintln!(
-            "Writing piece {}/{}",
-            index,
-            self.torrent_file.info.pieces.0.len()
-        );
+        // eprintln!(
+        //     "Writing piece {}/{}",
+        //     index,
+        //     self.torrent_file.info.pieces.0.len()
+        // );
         let piece_start_offset = index * self.torrent_file.info.plength;
         let mut piece_bytes_written = 0;
         let mut current_global_offset = 0;
