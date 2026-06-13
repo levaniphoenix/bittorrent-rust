@@ -1,10 +1,13 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 pub struct DownloadProgress {
     bytes_downloaded: AtomicU64,
     pieces_completed: AtomicUsize,
     connected_peers: AtomicUsize,
+    completed_pieces: Mutex<HashSet<usize>>,
     total_pieces: usize,
     start_time: Instant,
 }
@@ -15,6 +18,7 @@ impl DownloadProgress {
             bytes_downloaded: AtomicU64::new(0),
             pieces_completed: AtomicUsize::new(0),
             connected_peers: AtomicUsize::new(0),
+            completed_pieces: Mutex::new(HashSet::new()),
             total_pieces,
             start_time: Instant::now(),
         }
@@ -32,8 +36,25 @@ impl DownloadProgress {
         self.bytes_downloaded.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub fn complete_piece(&self) {
-        self.pieces_completed.fetch_add(1, Ordering::Relaxed);
+    pub fn complete_piece(&self, index: usize) {
+        let mut completed = self.completed_pieces.lock().unwrap();
+        if completed.insert(index) {
+            self.pieces_completed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_piece_completed(&self, index: usize) -> bool {
+        let completed = self.completed_pieces.lock().unwrap();
+        completed.contains(&index)
+    }
+
+    pub fn pieces_remaining(&self) -> usize {
+        self.total_pieces - self.pieces_completed.load(Ordering::Relaxed)
+    }
+
+    pub fn is_endgame(&self) -> bool {
+        let remaining = self.pieces_remaining();
+        remaining <= 10 || (self.total_pieces > 0 && remaining <= self.total_pieces / 10)
     }
 
     pub fn display(&self) {

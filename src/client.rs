@@ -15,7 +15,7 @@ use crate::peers::{Message, MessageFramer, MessageTag, Piece, Request};
 use crate::progress::DownloadProgress;
 use crate::torrent::{Torrent, PEER_ID};
 
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub struct DownloadClient {
@@ -52,8 +52,8 @@ impl DownloadClient {
     }
 
     pub async fn try_connect(&mut self) -> Result<()> {
-        let timeout_duration = Duration::from_secs(10);
-        eprintln!("Connecting to {}", self.ip);
+        let timeout_duration = Duration::from_secs(5);
+        eprintln!("\nConnecting to {}", self.ip);
 
         let tcp_stream = time::timeout(timeout_duration, TcpStream::connect(&self.ip))
             .await
@@ -144,7 +144,7 @@ impl DownloadClient {
         }
 
         self.progress.add_bytes(piece_data.len() as u64);
-        self.progress.complete_piece();
+        self.progress.complete_piece(piece_index);
 
         self.data_sender
             .send((piece_index, piece_data))
@@ -165,7 +165,7 @@ impl DownloadClient {
                 command = self.broadcast_receiver.recv() => {
                     match command {
                         Ok(BroadcastCommand::Shutdown) => {
-                            eprintln!("Worker {} shutting down", self.ip);
+                            eprintln!("\nWorker {} shutting down", self.ip);
                             break;
                         }
                         Err(_) => break,
@@ -174,9 +174,11 @@ impl DownloadClient {
                 piece_index_result = self.piece_receiver.recv() => {
                     match piece_index_result {
                         Ok(Some(index)) => {
-                            //eprintln!("Downloading piece {} from {}", index, self.ip);
+                            if self.progress.is_piece_completed(index) {
+                                continue;
+                            }
                             if let Err(e) = self.download_piece(index).await {
-                                eprintln!("Error downloading piece {}: {}", index, e);
+                                eprintln!("\nError downloading piece {}: {}", index, e);
                                 self.piece_sender.send(index).await
                                     .context("failed to return piece to queue")?;
                             }

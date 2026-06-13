@@ -149,16 +149,57 @@ impl Torrent {
         );
         
         let client = Client::new();
-        let response = client
-            .get(tracker_url)
-            .header(USER_AGENT, "MyCustomUserAgent/1.0")
-            .send()
-            .await
-            .context("query tracker")?;
-        let response = response.bytes().await.context("fetch tracker response")?;
-        let tracker_info: TrackerResponse =
-            serde_bencode::from_bytes(&response).context("parse tracker response")?;
-        Ok(tracker_info)
+        let max_retries = 5;
+        let mut retry_delay = std::time::Duration::from_secs(2);
+        
+        for attempt in 1..=max_retries {
+            eprintln!("Contacting tracker (attempt {}/{})", attempt, max_retries);
+            
+            let response = match client
+                .get(&tracker_url)
+                .header(USER_AGENT, "BitTorrent-Rust/1.0")
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("Tracker request failed: {}", e);
+                    if attempt < max_retries {
+                        eprintln!("Retrying in {}s...", retry_delay.as_secs());
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay *= 2;
+                    }
+                    continue;
+                }
+            };
+            
+            let bytes = match response.bytes().await {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Failed to read tracker response: {}", e);
+                    if attempt < max_retries {
+                        eprintln!("Retrying in {}s...", retry_delay.as_secs());
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay *= 2;
+                    }
+                    continue;
+                }
+            };
+            
+            match serde_bencode::from_bytes(&bytes) {
+                Ok(tracker_info) => return Ok(tracker_info),
+                Err(e) => {
+                    eprintln!("Failed to parse tracker response: {}", e);
+                    if attempt < max_retries {
+                        eprintln!("Retrying in {}s...", retry_delay.as_secs());
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay *= 2;
+                    }
+                }
+            }
+        }
+        
+        anyhow::bail!("Failed to contact tracker after {} attempts", max_retries)
     }
 }
 

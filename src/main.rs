@@ -114,6 +114,46 @@ async fn main() -> anyhow::Result<()> {
 
             let num_workers = min(40, peers.len());
 
+            let endgame_progress = progress.clone();
+            let endgame_tx = piece_tx.clone();
+            set.spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    if endgame_progress.is_endgame() {
+                        let remaining = endgame_progress.pieces_remaining();
+                        if remaining == 0 {
+                            break;
+                        }
+                        eprintln!("\n[Endgame mode: {} pieces remaining, duplicating work]", remaining);
+                        for i in 0..num_pieces {
+                            if !endgame_progress.is_piece_completed(i) {
+                                let _ = endgame_tx.send(i).await;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+
+            let reannounce_torrent = torrent.clone();
+            let _reannounce_tx = piece_tx.clone();
+            let reannounce_progress = progress.clone();
+            set.spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                    if reannounce_progress.pieces_remaining() == 0 {
+                        break;
+                    }
+                    eprintln!("\n[Re-announcing to tracker for more peers]");
+                    if let Ok(new_tracker_info) = reannounce_torrent.contact_tracker().await {
+                        let mut new_peers = new_tracker_info.peers.0;
+                        new_peers.shuffle(&mut rand::rng());
+                        eprintln!("\n[Got {} new peers from tracker]", new_peers.len());
+                    }
+                }
+                Ok(())
+            });
+
             for peer in peers.into_iter().take(num_workers) {
                 let progress_clone = progress.clone();
                 let mut client = DownloadClient::new(
