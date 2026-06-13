@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use crate::{
-    hashes::hashes::Hashes,
-    peers::peers::Peer,
+    hashes::Hashes,
     tracker::{TrackerRequest, TrackerResponse},
 };
+
+pub const PEER_ID: [u8; 20] = *b"00112233445566778899";
+pub const BLOCK_MAX: usize = 1 << 14;
 
 /// A Metainfo file (also known as .torrent files).
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -54,15 +56,38 @@ pub struct Info {
 impl Info {
     pub fn calculate_length(&self) -> usize {
         match &self.keys {
-            Keys::SingleFile { length } => length.clone(),
-            Keys::MultiFile { files } => {
-                let mut sum: usize = 0;
-                for file in files.iter() {
-                    sum += file.length;
-                }
-                sum
-            }
+            Keys::SingleFile { length } => *length,
+            Keys::MultiFile { files } => files.iter().map(|f| f.length).sum(),
         }
+    }
+
+    pub fn num_pieces(&self) -> usize {
+        self.pieces.0.len()
+    }
+
+    pub fn piece_size(&self, piece_index: usize) -> usize {
+        if piece_index == self.num_pieces() - 1 {
+            let md = self.calculate_length() % self.plength;
+            if md == 0 { self.plength } else { md }
+        } else {
+            self.plength
+        }
+    }
+
+    pub fn block_size(&self, piece_index: usize, block_index: usize) -> usize {
+        let piece_size = self.piece_size(piece_index);
+        let n_blocks = (piece_size + BLOCK_MAX - 1) / BLOCK_MAX;
+        if block_index == n_blocks - 1 {
+            let md = piece_size % BLOCK_MAX;
+            if md == 0 { BLOCK_MAX } else { md }
+        } else {
+            BLOCK_MAX
+        }
+    }
+
+    pub fn num_blocks(&self, piece_index: usize) -> usize {
+        let piece_size = self.piece_size(piece_index);
+        (piece_size + BLOCK_MAX - 1) / BLOCK_MAX
     }
 }
 /// There is a key `length` or a key `files`, but not both or neither.
@@ -89,17 +114,9 @@ pub struct File {
     pub path: Vec<String>,
 }
 
-#[derive(Debug)]
-pub struct DownloadInfo {
-    pub downloaded: usize,
-    pub uploaded: usize,
-    pub left: usize,
-}
-
 #[derive(Clone, Debug)]
 pub struct Torrent {
     pub torrent_file: TorrentFile,
-    pub peers: Vec<Peer>,
     pub info_hash: [u8; 20],
 }
 
@@ -107,14 +124,13 @@ impl Torrent {
     pub fn new(torrent_file: TorrentFile) -> Self {
         Self {
             torrent_file: torrent_file.clone(),
-            peers: Vec::new(),
             info_hash: torrent_file.info_hash(),
         }
     }
 
     pub async fn contact_tracker(&self) -> anyhow::Result<TrackerResponse> {
         let request = TrackerRequest {
-            peer_id: String::from("00112233445566718890"),
+            peer_id: String::from_utf8_lossy(&PEER_ID).to_string(),
             port: 6881,
             uploaded: 0,
             downloaded: 0,

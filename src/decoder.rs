@@ -12,12 +12,11 @@ pub fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
             let string =
                 &encoded_value.as_bytes()[colon_index + 1..colon_index + 1 + number as usize];
             let rest = &encoded_value[colon_index + 1 + number as usize..];
-            (
-                serde_json::Value::String(unsafe {
-                    std::str::from_utf8_unchecked(string).to_string()
-                }),
-                rest,
-            )
+            let s = match std::str::from_utf8(string) {
+                Ok(s) => s.to_string(),
+                Err(_) => return (serde_json::Value::String(format!("<binary: {} bytes>", string.len())), rest),
+            };
+            (serde_json::Value::String(s), rest)
         }
         Some('i') => {
             let (mut n, rest) = encoded_value.split_at(encoded_value.find('e').unwrap());

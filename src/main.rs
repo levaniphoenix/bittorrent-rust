@@ -1,9 +1,8 @@
-pub mod activepeer;
-mod command;
+pub mod command;
 mod decoder;
 mod handshake;
-mod hashes;
-mod peers;
+pub mod hashes;
+pub mod peers;
 mod torrent;
 mod tracker;
 mod download_manager;
@@ -12,14 +11,13 @@ mod client;
 use std::cmp::min;
 use anyhow::Context;
 use clap::Parser;
-use rand::prelude::{IndexedRandom, SliceRandom};
+use rand::prelude::SliceRandom;
 use command::{Args, Command};
 use decoder::decode_bencoded_value;
 use sha1::{Digest, Sha1};
-use tokio::net::windows::named_pipe::PipeEnd::Client;
 use torrent::{Keys, Torrent, TorrentFile};
 use tokio::task::JoinSet;
-use tokio_mpmc::{channel};
+use tokio_mpmc::channel;
 use crate::client::DownloadClient;
 use crate::download_manager::FileManager;
 use tokio::sync::broadcast;
@@ -91,11 +89,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let mut num_workers = 40;
             let mut set = JoinSet::new();
-            let (broadcast_sender, broadcast_receiver) = broadcast::channel(16);
+            let (broadcast_sender, _broadcast_receiver) = broadcast::channel(16);
 
-            let mut file_manager = FileManager::new(t, "Download".to_string(), data_rx, broadcast_sender.clone());
+            let file_manager = FileManager::new(t, "Download".to_string(), data_rx, broadcast_sender.clone());
             file_manager.pre_allocate_files().expect("could not pre allocate files");
             set.spawn(file_manager.process());
 
@@ -103,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
             let mut rng = rand::rng();
             peers.shuffle(&mut rng);
 
-            num_workers = min(num_workers, peers.len());
+            let num_workers = min(40, peers.len());
 
             for peer in peers.into_iter().take(num_workers) {
                 let mut client = DownloadClient::new(
@@ -135,6 +132,3 @@ async fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-// ideas to improve
-// disconnect from peer if chocked for minute or not receiving msg for min

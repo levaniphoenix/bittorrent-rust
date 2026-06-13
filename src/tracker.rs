@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::peers::peers::Peers;
+use crate::peers::Peers;
 /// Note: the info hash field is _not_ included.
 #[derive(Debug, Clone, Serialize)]
 pub struct TrackerRequest {
@@ -26,9 +26,7 @@ pub struct TrackerRequest {
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrackerResponse {
-    /// An integer, indicating how often your client should make a request to the tracker in seconds.
-    ///
-    /// You can ignore this value for the purposes of this challenge.
+    #[allow(dead_code)]
     pub interval: usize,
 
     /// A string, which contains list of peers that your client can connect to.
